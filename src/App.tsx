@@ -53,7 +53,8 @@ import {
   Volume2,
   VolumeX,
   Maximize,
-  Minimize
+  Minimize,
+  Film
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { saveMediaBlob, getMediaBlob, triggerVideoDownload, deleteMediaBlob } from "./mediaDb";
@@ -65,6 +66,10 @@ import dikroFixtureDefault from "./assets/images/dikro_full_fixture_178380128037
 import nuovoponKitchenDefault from "./assets/images/nuovopon_kitchen_1783801291742.jpg";
 import videoPosterDefault from "./assets/images/fu_dose_step1_squeeze_1788495867873.jpg";
 import fullSystemLogoDefault from "./assets/images/full_system_logo.png";
+// Authentic default demo video served from static public path
+const videoDemoDefault = "/video_demostrativo_fu_dose.mp4";
+// Maximum video size (5 GB)
+const MAX_VIDEO_BYTES = 5 * 1024 * 1024 * 1024;
 
 // Helper to safely resolve logo image URL with fallback to authentic default logo
 const resolveLogoImage = (url: string | undefined): string => {
@@ -100,6 +105,15 @@ const resolveProductImage = (url: string | undefined, defaultImg: string): strin
   return defaultImg;
 };
 
+// Helper to safely resolve video URL with fallback to authentic bundled default video
+const resolveVideoUrl = (url: string | undefined): string => {
+  if (!url || typeof url !== "string" || !url.trim()) return videoDemoDefault;
+  if (url === "/video/video_demostrativo_fu_dose.mp4" || url === "/videos/video_demostrativo_fu_dose.mp4") {
+    return "/video_demostrativo_fu_dose.mp4";
+  }
+  return url;
+};
+
 // CMS default copywriting & data structure
 const DEFAULT_CMS_DATA = {
   logo: {
@@ -120,12 +134,12 @@ const DEFAULT_CMS_DATA = {
     badge: "FU-DOSE EN ACCIÓN",
     title: "VIDEO DEMOSTRATIVO",
     desc: "El operario presiona la botella, la dosis se auto-mide en el depósito superior, se inclina y diluye directamente en agua. Cero derrame.",
-    embedUrl: "/video_demostrativo_fu_dose.mp4",
+    embedUrl: videoDemoDefault,
     posterUrl: videoPosterDefault,
     height: 380,
     isLocalUploaded: false,
     localFileName: "video_demostrativo_fu_dose.mp4",
-    localFileSize: "1.5 MB"
+    localFileSize: "19 MB"
   },
   hero: {
     badge: "💧 SISTEMA COMPLETO DE LIMPIEZA PROFESIONAL",
@@ -345,8 +359,8 @@ export default function App() {
             ...DEFAULT_CMS_DATA.video, 
             ...parsed.video,
             embedUrl: (parsed.video.embedUrl && !parsed.video.embedUrl.startsWith("blob:") && parsed.video.embedUrl !== "indexeddb://FS_CUSTOM_VIDEO" && !parsed.video.embedUrl.includes("mixkit.co")) 
-              ? parsed.video.embedUrl 
-              : DEFAULT_CMS_DATA.video.embedUrl,
+              ? resolveVideoUrl(parsed.video.embedUrl) 
+              : videoDemoDefault,
             posterUrl: (!parsed.video.posterUrl || parsed.video.posterUrl.includes("photo-1581578731548")) 
               ? videoPosterDefault 
               : parsed.video.posterUrl
@@ -465,6 +479,12 @@ export default function App() {
   const fileInputVideoRef = useRef<HTMLInputElement>(null);
   const fileInputVideoFuncRef = useRef<HTMLInputElement>(null);
 
+  // Dedicated Video Modal & Direct Video Insertion Controls
+  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
+
+  const [quickVideoUploadProgress, setQuickVideoUploadProgress] = useState(false);
+  const quickVideoInputRef = useRef<HTMLInputElement>(null);
+
   // Load custom uploaded media assets (video, logo, hero photo, products) from IndexedDB on startup
   useEffect(() => {
     async function loadStoredMediaAssets() {
@@ -475,6 +495,15 @@ export default function App() {
           const objUrl = URL.createObjectURL(videoBlob);
           const sizeMb = (videoBlob.size / (1024 * 1024)).toFixed(1) + " MB";
           setCmsData((prev) => ({
+            ...prev,
+            video: {
+              ...prev.video,
+              embedUrl: objUrl,
+              isLocalUploaded: true,
+              localFileSize: sizeMb
+            }
+          }));
+          setTempCmsData((prev) => ({
             ...prev,
             video: {
               ...prev.video,
@@ -674,50 +703,171 @@ export default function App() {
     }
   }, [isAdminOpen, cmsData]);
 
-  // Handle local video file uploads (MP4, WebM, MOV) stored persistently in IndexedDB
+  // Handle local video file uploads (MP4, WebM, MOV) stored on disk & IndexedDB
   const handleVideoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 80 * 1024 * 1024) {
-      alert("El archivo de video supera los 80MB. Te recomendamos comprimirlo a formato MP4 para que cargue fluidamente.");
+    // Maximum video size (5 GB) – uses global constant MAX_VIDEO_BYTES
+
+    // Supports large video files up to MAX_VIDEO_BYTES
+    if (file.size > MAX_VIDEO_BYTES) {
+      alert(`El archivo de video supera los ${MAX_VIDEO_BYTES / (1024 * 1024 * 1024)} GB. Te recomendamos usar un archivo menor.`);
       return;
     }
 
     try {
+      // 1. Physically write file to project disk (public/video_demostrativo_fu_dose.mp4)
+      let serverUrl = "";
+      try {
+        const resp = await fetch("/api/upload-video", {
+          method: "POST",
+          body: file
+        });
+        const data = await resp.json();
+        serverUrl = data && data.url ? data.url : "";
+      } catch (uploadErr) {
+        console.warn("Upload al server non riuscito:", uploadErr);
+      }
+      // 2. Save in IndexedDB for persistent fast offline browser playback
       await saveMediaBlob("FS_CUSTOM_VIDEO", file);
-      const objectUrl = URL.createObjectURL(file);
+      const embedUrl = serverUrl || URL.createObjectURL(file);
       const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + " MB";
-      setTempCmsData((prev) => ({
-        ...prev,
-        video: {
-          ...prev.video,
-          embedUrl: objectUrl,
-          isLocalUploaded: true,
-          localFileName: file.name,
-          localFileSize: sizeMb
-        }
-      }));
+      const updatedVideo = {
+        ...cmsData.video,
+        embedUrl: embedUrl,
+        isLocalUploaded: true,
+        localFileName: file.name,
+        localFileSize: sizeMb
+      };
+
+
+
+      const updated = {
+        ...cmsData,
+        video: updatedVideo
+      };
+
+      // 3. Update BOTH cmsData and tempCmsData so it takes effect instantly
+      setCmsData(updated);
+      setTempCmsData(updated);
+
+      try {
+        localStorage.setItem("FS_CMS_DATA", JSON.stringify(updated));
+        localStorage.setItem("FS_CMS_DATA_VERSION", "v6_authentic_user_brand");
+      } catch (err) {
+        console.warn(err);
+      }
+
+      setShowSavedIndicator(true);
+      setTimeout(() => setShowSavedIndicator(false), 3000);
+
+      // 4. Force reload video player
+      if (publicVideoRef.current) {
+        publicVideoRef.current.load();
+        publicVideoRef.current.play().catch(() => {});
+      }
     } catch (err) {
       console.error("Error al guardar video en IndexedDB:", err);
       alert("No se pudo guardar el video en el almacenamiento local del navegador.");
     }
   };
 
+  // Quick direct video file upload from modal or direct action
+  const handleQuickVideoUpload = async (file: File) => {
+    if (!file) return;
+    // Supports large video files up to MAX_VIDEO_BYTES
+    if (file.size > MAX_VIDEO_BYTES) {
+      alert(`El archivo supera los ${MAX_VIDEO_BYTES / (1024 * 1024 * 1024)} GB. Te recomendamos usar un archivo menor.`);
+      return;
+    }
+    setQuickVideoUploadProgress(true);
+    try {
+      // 1. Physically write file to project disk (public/video_demostrativo_fu_dose.mp4)
+      let serverUrl = "";
+      try {
+        const resp = await fetch("/api/upload-video", {
+          method: "POST",
+          body: file
+        });
+        const data = await resp.json();
+        serverUrl = data && data.url ? data.url : "";
+      } catch (uploadErr) {
+        console.warn("Upload al server non riuscito:", uploadErr);
+      }
+      // 2. Save in IndexedDB for persistent fast offline browser playback
+      await saveMediaBlob("FS_CUSTOM_VIDEO", file);
+      const embedUrl = serverUrl || URL.createObjectURL(file);
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + " MB";
+      const updatedVideo = {
+        ...cmsData.video,
+        embedUrl: embedUrl,
+        isLocalUploaded: true,
+        localFileName: file.name,
+        localFileSize: sizeMb
+      };
+      const updated = {
+        ...cmsData,
+        video: updatedVideo
+      };
+      setCmsData(updated);
+      setTempCmsData(updated);
+      try {
+        localStorage.setItem("FS_CMS_DATA", JSON.stringify(updated));
+        localStorage.setItem("FS_CMS_DATA_VERSION", "v6_authentic_user_brand");
+      } catch (err) {
+        console.warn(err);
+      }
+      setShowSavedIndicator(true);
+      setTimeout(() => setShowSavedIndicator(false), 3000);
+      setIsVideoModalOpen(false);
+
+      // Force reload video player
+      if (publicVideoRef.current) {
+        publicVideoRef.current.load();
+        publicVideoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.error("Error al guardar video:", err);
+      alert("No se pudo procesar el archivo de video en el almacenamiento local.");
+    } finally {
+      setQuickVideoUploadProgress(false);
+    }
+  };
+
+
+
   // Restore factory video
   const handleRestoreDefaultVideo = async () => {
     await deleteMediaBlob("FS_CUSTOM_VIDEO");
-    setTempCmsData((prev) => ({
-      ...prev,
-      video: {
-        ...prev.video,
-        embedUrl: DEFAULT_CMS_DATA.video.embedUrl,
-        posterUrl: DEFAULT_CMS_DATA.video.posterUrl,
-        isLocalUploaded: false,
-        localFileName: "",
-        localFileSize: ""
-      }
-    }));
+    const updatedVideo = {
+      ...cmsData.video,
+      embedUrl: videoDemoDefault,
+      posterUrl: videoPosterDefault,
+      isLocalUploaded: false,
+      localFileName: "video_demostrativo_fu_dose.mp4",
+      localFileSize: "19 MB"
+    };
+    const updated = {
+      ...cmsData,
+      video: updatedVideo
+    };
+    setCmsData(updated);
+    setTempCmsData(updated);
+    setHasVideoError(false);
+    try {
+      localStorage.setItem("FS_CMS_DATA", JSON.stringify(updated));
+      localStorage.setItem("FS_CMS_DATA_VERSION", "v6_authentic_user_brand");
+    } catch (err) {
+      console.warn(err);
+    }
+    setShowSavedIndicator(true);
+    setTimeout(() => setShowSavedIndicator(false), 2500);
+    setIsVideoModalOpen(false);
+    if (publicVideoRef.current) {
+      publicVideoRef.current.load();
+      publicVideoRef.current.play().catch(() => {});
+    }
   };
 
   // Trigger direct download of the current video file
@@ -2208,7 +2358,7 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
                       <video 
                         ref={publicVideoRef}
                         key={cmsData.video?.embedUrl}
-                        src={cmsData.video?.embedUrl}
+                        src={resolveVideoUrl(cmsData.video?.embedUrl)}
                         loop 
                         muted={isVideoMuted}
                         playsInline
@@ -2236,7 +2386,7 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
                         className={`w-full h-full ${videoFit === "cover" ? "object-cover" : "object-contain"} bg-black absolute inset-0 cursor-pointer transition-all duration-200`}
                         poster={cmsData.video?.posterUrl || videoPosterDefault}
                       >
-                        <source src={cmsData.video?.embedUrl} type="video/mp4" />
+                        <source src={resolveVideoUrl(cmsData.video?.embedUrl)} type="video/mp4" />
                         Tu navegador no soporta video HTML5.
                       </video>
 
@@ -2250,7 +2400,7 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
                           </span>
                         </div>
 
-                        {/* Right quick buttons (Scale fit & Sound) */}
+                        {/* Right quick buttons (Scale fit, Sound, and Insert Video) */}
                         <div className="flex items-center gap-2">
                           {/* Scale / Fit Toggle Button */}
                           <button
@@ -2287,6 +2437,22 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
                               </>
                             )}
                           </button>
+
+                          {/* Direct Insert / Change Video button - SOLO ADMIN */}
+                          {isAdminOpen && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setIsVideoModalOpen(true);
+                            }}
+                            className="pointer-events-auto bg-emerald-600 hover:bg-emerald-500 text-white backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-emerald-400/40 flex items-center gap-1.5 text-[10px] font-mono font-bold transition-all shadow-lg active:scale-95 cursor-pointer"
+                            title="Insertar o cambiar archivo de video"
+                          >
+                            <Upload className="w-3 h-3 text-white" />
+                            <span>Insertar Video</span>
+                          </button>
+                          )}
                         </div>
                       </div>
 
@@ -2307,19 +2473,42 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
 
                       {/* Video Load Error Fallback Card */}
                       {hasVideoError && (
-                        <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center z-20">
-                          <AlertCircle className="w-8 h-8 text-amber-400 mb-2" />
-                          <p className="text-xs text-slate-300 font-mono mb-3">
-                            Haz clic para iniciar el video en tu navegador
+                        <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center z-20">
+                          <AlertCircle className="w-9 h-9 text-amber-400 mb-2" />
+                          <h4 className="text-sm font-bold text-white mb-1">Video en preparación o no disponible</h4>
+                          <p className="text-xs text-slate-300 font-mono mb-4 max-w-sm">
+                            Podés iniciar el reproductor, insertar un video (.MP4) desde tu dispositivo o restaurar el video de fábrica.
                           </p>
-                          <button
-                            type="button"
-                            onClick={togglePlayVideo}
-                            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-white" />
-                            <span>Iniciar Reproductor</span>
-                          </button>
+                          <div className="flex flex-wrap items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={togglePlayVideo}
+                              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-white" />
+                              <span>Iniciar Reproductor</span>
+                            </button>
+                            {isAdminOpen && (
+                            <>
+                            <button
+                              type="button"
+                              onClick={() => setIsVideoModalOpen(true)}
+                              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border border-slate-700"
+                            >
+                              <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Insertar Video</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleRestoreDefaultVideo}
+                              className="px-3 py-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl text-xs font-mono flex items-center gap-1.5 transition-all cursor-pointer border border-slate-700"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>Restaurar Fábrica</span>
+                            </button>
+                            </>
+                            )}
+                          </div>
                         </div>
                       )}
 
@@ -2396,7 +2585,7 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
                   "{cmsData.video?.desc || "El operario presiona la botella, la dosis se auto-mide en el depósito superior, se inclina y diluye directamente en agua. Cero derrame."}"
                 </p>
 
-                {/* Direct Action Bar with Reliable Download Video Button */}
+                {/* Direct Action Bar with Reliable Download Video Button & Insert/Change Video */}
                 {cmsData.video?.embedUrl && (
                   <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 bg-white border border-slate-200/90 rounded-2xl p-3 shadow-sm">
                     <div className="flex items-center gap-2.5 text-left">
@@ -2412,15 +2601,30 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
                         </span>
                       </div>
                     </div>
-                    <button 
-                      type="button"
-                      onClick={() => triggerVideoDownload(cmsData.video?.embedUrl, cmsData.video?.localFileName || "video_demostrativo_fu_dose.mp4")}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm active:scale-95 cursor-pointer ml-auto"
-                      title="Descargar este video a tu computadora o dispositivo"
-                    >
-                      <Download className="w-3.5 h-3.5 text-white" />
-                      <span>Descargar Video (.MP4)</span>
-                    </button>
+                    
+                    <div className="flex items-center gap-2 ml-auto flex-wrap">
+                      {isAdminOpen && (
+                      <button 
+                        type="button"
+                        onClick={() => setIsVideoModalOpen(true)}
+                        className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
+                        title="Insertar un archivo MP4 o enlace de YouTube/Vimeo"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-white" />
+                        <span>Insertar / Cambiar Video</span>
+                      </button>
+                      )}
+
+                      <button 
+                        type="button"
+                        onClick={() => triggerVideoDownload(cmsData.video?.embedUrl, cmsData.video?.localFileName || "video_demostrativo_fu_dose.mp4")}
+                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer border border-slate-200"
+                        title="Descargar este video a tu computadora o dispositivo"
+                      >
+                        <Download className="w-3.5 h-3.5 text-slate-600" />
+                        <span>Descargar Video (.MP4)</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -3128,6 +3332,128 @@ const DEFAULT_CMS_DATA = ${JSON.stringify(cmsData, null, 2)};`;
 
         </div>
       </footer>
+
+      {/* ==================== QUICK INSERT / CHANGE VIDEO MODAL ==================== */}
+      <AnimatePresence>
+        {isAdminOpen && isVideoModalOpen && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden text-white flex flex-col max-h-[90vh]"
+            >
+              {/* Header */}
+              <div className="p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                    <FileVideo className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base text-white">Insertar o Cambiar Video</h3>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      Subí tu video propio (.MP4, .WEBM) o pegá un enlace de YouTube/Vimeo
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsVideoModalOpen(false)}
+                  className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-all cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 space-y-6 overflow-y-auto">
+                {/* Option 1: Upload from device */}
+                <div className="p-4 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                      <Upload className="w-4 h-4" />
+                      Opción 1: Subir Archivo desde tu Computadora / Móvil
+                    </span>
+                      <span className="text-[10px] text-emerald-400 font-mono font-bold">Sin restricciones (Hasta 5 GB)</span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Seleccioná cualquier archivo de video desde tu computadora, laptop o celular. Se guardará de forma permanente y se reproducirá al instante.
+                  </p>
+
+                  <div 
+                    onClick={() => quickVideoInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-700 hover:border-emerald-500 rounded-xl p-5 text-center cursor-pointer transition-colors bg-slate-900/50 hover:bg-emerald-950/20 group"
+                  >
+                    <Upload className="w-8 h-8 text-slate-400 group-hover:text-emerald-400 mx-auto mb-2 transition-colors" />
+                    <p className="text-xs font-bold text-white mb-1">
+                      {quickVideoUploadProgress ? "Procesando y guardando video..." : "Haz clic aquí para seleccionar el archivo de video"}
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-mono">
+                      Formatos recomendados: .MP4, .WEBM, .MOV
+                    </p>
+                  </div>
+
+                  <input 
+                    type="file"
+                    ref={quickVideoInputRef}
+                    accept="video/mp4,video/webm,video/ogg,video/quicktime"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleQuickVideoUpload(file);
+                    }}
+                    className="hidden"
+                  />
+                </div>
+
+
+
+
+                {/* Option 3: Restore Factory Default Video */}
+                <div className="p-4 bg-slate-950/70 border border-slate-800 rounded-2xl flex items-center justify-between gap-4">
+                  <div>
+                    <span className="text-xs font-mono font-bold text-slate-300 block mb-0.5">
+                      Restaurar Video Original de Fábrica
+                    </span>
+                    <p className="text-[11px] text-slate-400">
+                      Vuelve al video original de demostración de dosificación de Full System.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRestoreDefaultVideo}
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border border-slate-700 cursor-pointer flex-shrink-0"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Restaurar</span>
+                  </button>
+                </div>
+
+                {/* Current video status */}
+                <div className="text-[11px] font-mono text-slate-400 bg-slate-950 p-3 rounded-xl border border-slate-800/80 flex items-center justify-between">
+                  <span className="truncate max-w-[340px]">
+                    Video actual: {cmsData.video?.isLocalUploaded ? (cmsData.video.localFileName || "Video personalizado") : (cmsData.video?.embedUrl?.slice(0, 45) || "video_demostrativo_fu_dose.mp4")}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${cmsData.video?.isLocalUploaded ? "bg-emerald-500/20 text-emerald-400" : "bg-blue-500/20 text-blue-400"}`}>
+                    {cmsData.video?.isLocalUploaded ? "Almacenado Local" : "Enlace / Fábrica"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 border-t border-slate-800 bg-slate-950 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsVideoModalOpen(false)}
+                  className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold transition-all cursor-pointer"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* ==================== CMS ADMIN DASHBOARD PANEL OVERLAY ==================== */}
       <AnimatePresence>
